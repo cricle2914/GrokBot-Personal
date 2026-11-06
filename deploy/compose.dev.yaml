@@ -3,6 +3,7 @@ services:
     build: ../services/agent-api
     environment:
       AGENT_ACCESS_TOKEN: ${AGENT_ACCESS_TOKEN:?Set AGENT_ACCESS_TOKEN}
+      MODEL_ENCRYPTION_KEY: ${MODEL_ENCRYPTION_KEY:?Set MODEL_ENCRYPTION_KEY}
       DATABASE_URL: postgresql+psycopg://grokbot:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@db:5432/grokbot
       AGENT_WORKSPACE: /data/workspace
     volumes:

@@ -2,18 +2,21 @@ import os
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 
+from cryptography.fernet import Fernet
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from .db import Base, engine, get_db
-from .models import Bot, Message, Task
-from .schemas import BotCreate, BotRead, MessageCreate, MessageRead, TaskCreate, TaskRead
+from .models import Bot, Message, ModelConfig, Task
+from .schemas import BotCreate, BotRead, MessageCreate, MessageRead, ModelConfigRead, ModelConfigWrite, TaskCreate, TaskRead
 
 WORKSPACE = Path(os.getenv("AGENT_WORKSPACE", "./workspace"))
 ACCESS_TOKEN = os.getenv("AGENT_ACCESS_TOKEN", "")
+MODEL_ENCRYPTION_KEY = os.getenv("MODEL_ENCRYPTION_KEY", "")
 
 
 @asynccontextmanager
@@ -27,7 +30,7 @@ app = FastAPI(title="GrokBot Personal API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:1420", "http://127.0.0.1:1420", "http://tauri.localhost", "tauri://localhost"],
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PUT"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
@@ -44,6 +47,45 @@ def find_bot(db: Session, bot_id: str) -> Bot:
     if not bot:
         raise HTTPException(status_code=404, detail="Bot not found")
     return bot
+
+
+def read_model_config(config: ModelConfig | None) -> ModelConfigRead | None:
+    if config is None:
+        return None
+    return ModelConfigRead(provider=config.provider, base_url=config.base_url,
+                           model_name=config.model_name, has_api_key=bool(config.encrypted_api_key))
+
+
+@app.get("/model-config", response_model=ModelConfigRead | None, dependencies=[Depends(authorize)])
+def get_model_config(db: Session = Depends(get_db)):
+    return read_model_config(db.get(ModelConfig, 1))
+
+
+@app.put("/model-config", response_model=ModelConfigRead, dependencies=[Depends(authorize)])
+def put_model_config(body: ModelConfigWrite, db: Session = Depends(get_db)):
+    parsed = urlparse(body.base_url)
+    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password or parsed.fragment:
+        raise HTTPException(status_code=422, detail="Model API URL must be HTTPS")
+    if not MODEL_ENCRYPTION_KEY:
+        raise HTTPException(status_code=503, detail="Model encryption is not configured")
+    try:
+        cipher = Fernet(MODEL_ENCRYPTION_KEY.encode())
+    except (ValueError, TypeError) as error:
+        raise HTTPException(status_code=503, detail="Model encryption key is invalid") from error
+    config = db.get(ModelConfig, 1)
+    if not config and not body.api_key:
+        raise HTTPException(status_code=422, detail="API key is required for first setup")
+    if not config:
+        config = ModelConfig(id=1, provider=body.provider, base_url=body.base_url,
+                             model_name=body.model_name, encrypted_api_key="")
+        db.add(config)
+    config.provider = body.provider
+    config.base_url = body.base_url
+    config.model_name = body.model_name
+    if body.api_key:
+        config.encrypted_api_key = cipher.encrypt(body.api_key.encode()).decode()
+    db.commit()
+    return read_model_config(config)
 
 
 @app.get("/health", dependencies=[Depends(authorize)])

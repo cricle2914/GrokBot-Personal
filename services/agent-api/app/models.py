@@ -45,3 +45,13 @@ class Task(Base):
     title: Mapped[str] = mapped_column(String(240), nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class ModelConfig(Base):
+    __tablename__ = "model_config"
+
+    id: Mapped[int] = mapped_column(primary_key=True, default=1)
+    provider: Mapped[str] = mapped_column(String(80), nullable=False)
+    base_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    model_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    encrypted_api_key: Mapped[str] = mapped_column(Text, nullable=False)

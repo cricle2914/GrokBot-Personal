@@ -41,3 +41,17 @@ class TaskRead(BaseModel):
     title: str
     status: str
     created_at: datetime
+
+
+class ModelConfigWrite(BaseModel):
+    provider: str = Field(min_length=1, max_length=80)
+    base_url: str = Field(min_length=8, max_length=500)
+    model_name: str = Field(min_length=1, max_length=120)
+    api_key: str | None = Field(default=None, min_length=1, max_length=4000)
+
+
+class ModelConfigRead(BaseModel):
+    provider: str
+    base_url: str
+    model_name: str
+    has_api_key: bool

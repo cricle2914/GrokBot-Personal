@@ -4,10 +4,10 @@
 
 ```text
 Windows 客户端 (Tauri + React)
-    │  HTTP + 访问令牌
+    │  SSH 隧道 + HTTP + 服务访问令牌
     ▼
 FastAPI ─── PostgreSQL
-    │          └─ Bot / Message / Task
+    │          └─ Bot / Message / Task / 加密的全局模型配置
     └─ 原型工具（默认关闭）
 ```
 
@@ -37,8 +37,8 @@ Bot 是逻辑身份，不对应 Linux 用户或常驻容器。多个 Bot 共享�
 
 后续消息与任务协议需包含唯一 ID、幂等处理、关联关系、循环检测、最大委派深度、超时、限额和跨 Bot 权限检查。模型输出只能提出工具调用请求，不能绕过权限与审批。Shell、文件、浏览器和临时容器工具都要记录审计事件；Agent 不使用宿主机 root，不挂载整个宿主机文件系统，也不接触 Docker Socket。
 
-模型通过 Provider Adapter 对接 OpenAI、DeepSeek、Anthropic、Grok 和 OpenAI-compatible API。API Key 的安全存储尚未实现，因此第一阶段界面不接收真实模型密钥。
+模型 Provider Adapter 与自动回复尚未实现。当前可保存全局 Provider、HTTPS Base URL、模型名称和加密 API Key；未单独设置模型的 Bot 继承全局配置。模型密钥只在保存时传入，不由读取 API 返回。
 
 ## 发布规则
 
-Push/PR 只执行测试与构建检查。当前 CI 的 Windows 安装包作为测试 Artifact 保存，不自动发布生产。后续由明确触发或审批的工作流创建 GitHub Release、签名更新文件并部署云端服务。私有仓库的客户端更新文件还需要可由客户端访问的分发地址。
+Push/PR 只执行测试与构建检查。Windows Release 由手动触发的独立工作流创建公开的 GitHub Release、签名安装包与 `latest.json`。客户端从公开的 GitHub Release 检查更新。首次发布及真实客户端更新仍待验证。云端服务不会由测试通过自动部署。
