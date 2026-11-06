@@ -1,65 +1,147 @@
 import os
+import secrets
+from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlparse
 
+from cryptography.fernet import Fernet
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from sqlalchemy import select, text
+from sqlalchemy.orm import Session
 
-app = FastAPI(title="GrokBot Personal Agent API")
+from .db import Base, engine, get_db
+from .models import Bot, Message, ModelConfig, Task
+from .schemas import BotCreate, BotRead, MessageCreate, MessageRead, ModelConfigRead, ModelConfigWrite, TaskCreate, TaskRead
+
+WORKSPACE = Path(os.getenv("AGENT_WORKSPACE", "./workspace"))
+ACCESS_TOKEN = os.getenv("AGENT_ACCESS_TOKEN", "")
+MODEL_ENCRYPTION_KEY = os.getenv("MODEL_ENCRYPTION_KEY", "")
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    Base.metadata.create_all(bind=engine)
+    WORKSPACE.mkdir(parents=True, exist_ok=True)
+    yield
+
+
+app = FastAPI(title="GrokBot Personal API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:1420", "http://tauri.localhost", "tauri://localhost"],
-    allow_methods=["GET", "POST"],
+    allow_origins=["http://localhost:1420", "http://127.0.0.1:1420", "http://tauri.localhost", "tauri://localhost"],
+    allow_methods=["GET", "POST", "PUT"],
     allow_headers=["Authorization", "Content-Type"],
 )
-
-WORKSPACE = Path(os.getenv("AGENT_WORKSPACE", "/data/workspace"))
-ACCESS_TOKEN = os.getenv("AGENT_ACCESS_TOKEN", "")
 
 
 def authorize(authorization: str | None = Header(default=None)) -> None:
     if not ACCESS_TOKEN:
         raise HTTPException(status_code=503, detail="AGENT_ACCESS_TOKEN is not configured")
-    if authorization != f"Bearer {ACCESS_TOKEN}":
+    if not authorization or not secrets.compare_digest(authorization, f"Bearer {ACCESS_TOKEN}"):
         raise HTTPException(status_code=401, detail="Invalid access token")
 
 
-class TaskRequest(BaseModel):
-    kind: str
-    value: str = Field(min_length=1, max_length=2048)
+def find_bot(db: Session, bot_id: str) -> Bot:
+    bot = db.get(Bot, bot_id)
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    return bot
+
+
+def read_model_config(config: ModelConfig | None) -> ModelConfigRead | None:
+    if config is None:
+        return None
+    return ModelConfigRead(provider=config.provider, base_url=config.base_url,
+                           model_name=config.model_name, has_api_key=bool(config.encrypted_api_key))
+
+
+@app.get("/model-config", response_model=ModelConfigRead | None, dependencies=[Depends(authorize)])
+def get_model_config(db: Session = Depends(get_db)):
+    return read_model_config(db.get(ModelConfig, 1))
+
+
+@app.put("/model-config", response_model=ModelConfigRead, dependencies=[Depends(authorize)])
+def put_model_config(body: ModelConfigWrite, db: Session = Depends(get_db)):
+    parsed = urlparse(body.base_url)
+    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password or parsed.fragment:
+        raise HTTPException(status_code=422, detail="Model API URL must be HTTPS")
+    if not MODEL_ENCRYPTION_KEY:
+        raise HTTPException(status_code=503, detail="Model encryption is not configured")
+    try:
+        cipher = Fernet(MODEL_ENCRYPTION_KEY.encode())
+    except (ValueError, TypeError) as error:
+        raise HTTPException(status_code=503, detail="Model encryption key is invalid") from error
+    config = db.get(ModelConfig, 1)
+    if not config and not body.api_key:
+        raise HTTPException(status_code=422, detail="API key is required for first setup")
+    if not config:
+        config = ModelConfig(id=1, provider=body.provider, base_url=body.base_url,
+                             model_name=body.model_name, encrypted_api_key="")
+        db.add(config)
+    config.provider = body.provider
+    config.base_url = body.base_url
+    config.model_name = body.model_name
+    if body.api_key:
+        config.encrypted_api_key = cipher.encrypt(body.api_key.encode()).decode()
+    db.commit()
+    return read_model_config(config)
 
 
 @app.get("/health", dependencies=[Depends(authorize)])
-def health() -> dict:
-    WORKSPACE.mkdir(parents=True, exist_ok=True)
-    return {"status": "online", "workspace": str(WORKSPACE)}
+def health(db: Session = Depends(get_db)) -> dict:
+    db.execute(text("SELECT 1"))
+    return {"status": "online", "database": "online"}
 
 
-@app.post("/tasks", dependencies=[Depends(authorize)])
-async def run_task(task: TaskRequest) -> dict:
-    WORKSPACE.mkdir(parents=True, exist_ok=True)
-    if task.kind == "note":
-        notes = WORKSPACE / "notes.txt"
-        with notes.open("a", encoding="utf-8") as file:
-            file.write(task.value.replace("\r", " ").replace("\n", " ") + "\n")
-        return {"kind": "note", "result": "已保存到云端工作目录的 notes.txt"}
-    if task.kind == "read_notes":
-        notes = WORKSPACE / "notes.txt"
-        return {"kind": "read_notes", "result": notes.read_text(encoding="utf-8") if notes.exists() else "暂无笔记"}
-    if task.kind == "browse":
-        parsed = urlparse(task.value)
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            raise HTTPException(status_code=400, detail="请输入有效的 http(s) URL")
-        from playwright.async_api import async_playwright
+@app.post("/bots", response_model=BotRead, status_code=201, dependencies=[Depends(authorize)])
+def create_bot(body: BotCreate, db: Session = Depends(get_db)):
+    bot = Bot(**body.model_dump())
+    db.add(bot)
+    db.commit()
+    db.refresh(bot)
+    return bot
 
-        async with async_playwright() as playwright:
-            browser = await playwright.chromium.launch(headless=True)
-            try:
-                page = await browser.new_page()
-                await page.goto(task.value, wait_until="domcontentloaded", timeout=20000)
-                title = await page.title()
-                return {"kind": "browse", "result": f"网页标题：{title}\n最终地址：{page.url}"}
-            finally:
-                await browser.close()
-    raise HTTPException(status_code=400, detail="不支持的任务类型")
+
+@app.get("/bots", response_model=list[BotRead], dependencies=[Depends(authorize)])
+def list_bots(db: Session = Depends(get_db)):
+    return db.scalars(select(Bot).order_by(Bot.created_at, Bot.id)).all()
+
+
+@app.get("/bots/{bot_id}", response_model=BotRead, dependencies=[Depends(authorize)])
+def get_bot(bot_id: str, db: Session = Depends(get_db)):
+    return find_bot(db, bot_id)
+
+
+@app.post("/bots/{bot_id}/messages", response_model=MessageRead, status_code=201, dependencies=[Depends(authorize)])
+def create_message(bot_id: str, body: MessageCreate, db: Session = Depends(get_db)):
+    find_bot(db, bot_id)
+    message = Message(bot_id=bot_id, sender="user", content=body.content)
+    db.add(message)
+    db.commit()
+    db.refresh(message)
+    return message
+
+
+@app.get("/bots/{bot_id}/messages", response_model=list[MessageRead], dependencies=[Depends(authorize)])
+def list_messages(bot_id: str, db: Session = Depends(get_db)):
+    find_bot(db, bot_id)
+    return db.scalars(select(Message).where(Message.bot_id == bot_id).order_by(Message.created_at, Message.id).limit(200)).all()
+
+
+@app.post("/bots/{bot_id}/tasks", response_model=TaskRead, status_code=201, dependencies=[Depends(authorize)])
+def create_task(bot_id: str, body: TaskCreate, db: Session = Depends(get_db)):
+    find_bot(db, bot_id)
+    task = Task(bot_id=bot_id, title=body.title, status="pending")
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    return task
+
+
+@app.get("/bots/{bot_id}/tasks", response_model=list[TaskRead], dependencies=[Depends(authorize)])
+def list_tasks(bot_id: str, db: Session = Depends(get_db)):
+    find_bot(db, bot_id)
+    return db.scalars(select(Task).where(Task.bot_id == bot_id).order_by(Task.created_at.desc(), Task.id.desc()).limit(100)).all()
+
+

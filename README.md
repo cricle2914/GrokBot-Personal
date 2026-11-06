@@ -1,19 +1,25 @@
-# GrokBot-Personal
+# GrokBot Personal
 
-个人 Windows AI Agent 桌面应用。桌面端使用 Tauri + React/TypeScript，云端服务使用 Python/FastAPI，CI 使用 GitHub Actions。规划使用 Tauri 自动更新，模型通过用户配置的 API Token 接入，执行环境是用户自己的云服务器。
+个人 Windows 多 Bot 平台。仓库采用 Monorepo：`apps/desktop` 是 Tauri 2 + React/TypeScript 客户端；`services/agent-api` 是 FastAPI 后端；`deploy` 是容器配置。
 
-## 最小验证版
+## 第一阶段状态
 
-当前可验证连接、在云端持久保存笔记，以及在云端浏览器打开网页并返回标题。当前没有模型接入、通用 Agent、电脑控制或自动更新；这些不属于本次最小验证范围。
+- 已实现：Bot 创建与查询、用户消息存储与查询、待办任务创建与查询、PostgreSQL 数据模型、访问令牌校验、桌面端三栏界面、SSH 隧道连接、全局模型 API Key 加密存储、GitHub Actions 基础 CI。
+- 已配置待发布：Tauri 签名自动更新与手动触发的 Windows Release 工作流。首次发布和客户端实际更新尚未验证。
+- 待实现：模型推理、Bot 自动回复、多 Bot 通信、任务执行器、记忆、云端屏幕、本机操作。
+- 原型中的笔记和浏览器测试代码保留在 `app/prototype_tools.py`，未接入第一阶段 API。
 
-### 本地试运行
+## 本地运行
 
-在 `services/agent-api` 下设置 `AGENT_ACCESS_TOKEN` 和 `AGENT_WORKSPACE`，安装 `requirements.txt`，执行 `python -m playwright install chromium`，再运行 `uvicorn app.main:app --host 127.0.0.1 --port 8000`。访问令牌请自行生成，不要提交到仓库。
+1. 复制 `deploy/.env.example` 为 `deploy/.env`，填写服务令牌、数据库密码和 Fernet 加密密钥。可用 `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` 生成密钥；不要提交 `.env`。密钥丢失后已保存的模型 API Key 无法解密。
+2. 在 `deploy` 目录运行 `docker compose -f compose.dev.yaml up -d --build`。API 仅监听本机 `127.0.0.1:8000`。
+3. 在 `apps/desktop` 目录运行 `npm ci` 和 `npm run tauri dev`。需要先安装 [Tauri 2 Windows 前置依赖](https://v2.tauri.app/start/prerequisites/)；只查看界面也可运行 `npm run dev`。
+4. Windows 桌面端默认使用 SSH：填写本机 `~/.ssh/config` 中的主机别名、远程 API 端口与 `AGENT_ACCESS_TOKEN`。应用通过本机端口 18001 连接服务器；SSH 需预先配置密钥及已信任的主机。网页开发预览可选直接连接。访问令牌仅保留在本次应用会话中。
 
-在 `apps/desktop` 下运行 `npm ci`、`npm run dev`，浏览器打开 `http://127.0.0.1:1420`。安装 Rust 与 Tauri 的 Windows 依赖后，可运行 `npm run tauri dev`。私有仓库的 GitHub Actions 会尝试构建 Windows 安装包并运行后端测试。
+连接成功后可在设置中填写模型 Provider、HTTPS Base URL、模型名称和 API Key。Key 加密保存在服务端 PostgreSQL；界面和 GET API 只返回“已配置”状态。没有单独指定模型的 Bot 显示全局模型名称。当前版本不调用模型生成回复。
 
-### 云服务器
+Windows Release 仅由 GitHub Actions 的 `Release Windows` 手动工作流触发；成功后公开的 GitHub Release 提供安装包及签名更新文件。安装过支持更新的客户端后，新版本在启动时自动检查并安装。现有 0.2.0 安装包没有更新器，升级到首个带更新器的版本仍需手动安装一次。
 
-`deploy/compose.yaml` 预留了容器部署配置，工作目录使用 Docker volume 持久化。API 只绑定服务器本机的 `127.0.0.1:8000`；远程访问需要另行配置 HTTPS 入口和认证，不能直接暴露这个端口。
+运行测试：在 `services/agent-api` 安装 `requirements.txt`、`httpx`、`pytest` 后执行 `python -m pytest tests -q`。CI 使用独立 PostgreSQL 服务运行同一套 API 测试，并构建 Windows 客户端与 Linux 后端镜像。
 
-仓库内不保存真实密钥、服务器地址或凭据。
+架构和后续任务见 [docs/architecture.md](docs/architecture.md) 与 [docs/roadmap.md](docs/roadmap.md)。
