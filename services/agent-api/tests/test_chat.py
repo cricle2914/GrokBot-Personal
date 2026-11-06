@@ -51,3 +51,22 @@ def test_chat_context_isolation_and_failure(monkeypatch, provider):
         messages = client.get(f"/bots/{bot}/messages", headers=HEADERS).json()
         assert len(messages) == 4
         assert client.post(path, headers=HEADERS, json={"content": "  "}).status_code == 422
+
+
+def test_unsaved_config_test_does_not_replace_key(monkeypatch):
+    from app.db import SessionLocal
+    from app.models import ModelConfig
+    with TestClient(app) as client:
+        payload = {"provider": "OpenAI-compatible", "base_url": "https://model.example/v1", "model_name": "saved-model", "api_key": "original-key"}
+        client.put("/model-config", headers=HEADERS, json=payload)
+        with SessionLocal() as db:
+            original = db.get(ModelConfig, 1).encrypted_api_key
+        monkeypatch.setattr("app.main.generate_reply", lambda *args: "OK")
+        response = client.post("/model-config/test", headers=HEADERS, json={**payload, "api_key": "unsaved-test-key", "model_name": "unsaved-model"})
+        assert response.json() == {"status": "ok"}
+        with SessionLocal() as db:
+            config = db.get(ModelConfig, 1)
+            assert config.encrypted_api_key == original
+            assert config.model_name == "saved-model"
+        assert client.post("/model-config/test", json=payload).status_code == 401
+        assert client.post("/model-config/test", headers=HEADERS, json={**payload, "base_url": "http://example.com"}).status_code == 422

@@ -65,7 +65,7 @@ def get_model_config(db: Session = Depends(get_db)):
 @app.put("/model-config", response_model=ModelConfigRead, dependencies=[Depends(authorize)])
 def put_model_config(body: ModelConfigWrite, db: Session = Depends(get_db)):
     parsed = urlparse(body.base_url)
-    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password or parsed.fragment:
+    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password or parsed.fragment or parsed.query:
         raise HTTPException(status_code=422, detail="Model API URL must be HTTPS")
     if not MODEL_ENCRYPTION_KEY:
         raise HTTPException(status_code=503, detail="Model encryption is not configured")
@@ -87,6 +87,25 @@ def put_model_config(body: ModelConfigWrite, db: Session = Depends(get_db)):
         config.encrypted_api_key = cipher.encrypt(body.api_key.encode()).decode()
     db.commit()
     return read_model_config(config)
+
+
+@app.post("/model-config/test", dependencies=[Depends(authorize)])
+def test_model_config(body: ModelConfigWrite, db: Session = Depends(get_db)):
+    parsed = urlparse(body.base_url)
+    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password or parsed.fragment or parsed.query:
+        raise HTTPException(status_code=422, detail="Model API URL must be HTTPS")
+    saved = db.get(ModelConfig, 1)
+    try:
+        cipher = Fernet(MODEL_ENCRYPTION_KEY.encode())
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=503, detail="Model encryption is not configured") from None
+    if not body.api_key and not saved:
+        raise HTTPException(status_code=422, detail="API key is required")
+    config = ModelConfig(provider=body.provider, base_url=body.base_url, model_name=body.model_name,
+                         encrypted_api_key=cipher.encrypt(body.api_key.encode()).decode() if body.api_key else saved.encrypted_api_key)
+    bot = Bot(name="连接测试", role="回复简短确认", description="")
+    generate_reply(config, bot, [], "Reply with OK.", MODEL_ENCRYPTION_KEY)
+    return {"status": "ok"}
 
 
 @app.get("/health", dependencies=[Depends(authorize)])
