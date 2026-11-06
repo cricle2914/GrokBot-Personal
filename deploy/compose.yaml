@@ -1,0 +1,14 @@
+services:
+  agent-api:
+    build: ../services/agent-api
+    environment:
+      AGENT_ACCESS_TOKEN: ${AGENT_ACCESS_TOKEN:?Set AGENT_ACCESS_TOKEN}
+      AGENT_WORKSPACE: /data/workspace
+    volumes:
+      - agent-workspace:/data/workspace
+    ports:
+      - "127.0.0.1:8000:8000"
+    restart: unless-stopped
+
+volumes:
+  agent-workspace:
