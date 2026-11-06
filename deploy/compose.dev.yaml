@@ -1,0 +1,32 @@
+services:
+  agent-api:
+    build: ../services/agent-api
+    environment:
+      AGENT_ACCESS_TOKEN: ${AGENT_ACCESS_TOKEN:?Set AGENT_ACCESS_TOKEN}
+      DATABASE_URL: postgresql+psycopg://grokbot:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@db:5432/grokbot
+      AGENT_WORKSPACE: /data/workspace
+    volumes:
+      - agent-workspace:/data/workspace
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: grokbot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_DB: grokbot
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U grokbot -d grokbot"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+volumes:
+  postgres-data:
+  agent-workspace:

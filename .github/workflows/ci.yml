@@ -30,6 +30,22 @@ jobs:
           if-no-files-found: error
   agent-api:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: grokbot
+          POSTGRES_PASSWORD: test-only-password
+          POSTGRES_DB: grokbot_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U grokbot -d grokbot_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      AGENT_ACCESS_TOKEN: test-token
+      DATABASE_URL: postgresql+psycopg://grokbot:test-only-password@localhost:5432/grokbot_test
     defaults:
       run:
         working-directory: services/agent-api
@@ -40,4 +56,8 @@ jobs:
           python-version: '3.12'
       - run: pip install -r requirements.txt httpx pytest
       - run: python -m pytest tests -q
-
+  image-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t grokbot-agent-api:ci services/agent-api
