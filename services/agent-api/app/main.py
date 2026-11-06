@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
+from .model_client import generate_reply
 from .db import Base, engine, get_db
 from .models import Bot, Message, ModelConfig, Task
 from .schemas import BotCreate, BotRead, MessageCreate, MessageRead, ModelConfigRead, ModelConfigWrite, TaskCreate, TaskRead
@@ -123,10 +124,35 @@ def create_message(bot_id: str, body: MessageCreate, db: Session = Depends(get_d
     return message
 
 
+@app.post("/bots/{bot_id}/chat", response_model=list[MessageRead], status_code=201, dependencies=[Depends(authorize)])
+def chat(bot_id: str, body: MessageCreate, db: Session = Depends(get_db)):
+    bot = find_bot(db, bot_id)
+    if not body.content.strip():
+        raise HTTPException(status_code=422, detail="Message cannot be blank")
+    config = db.get(ModelConfig, 1)
+    if not config:
+        raise HTTPException(status_code=409, detail="请先保存全局模型配置")
+    if bot.model_provider and bot.model_provider != config.provider:
+        raise HTTPException(status_code=409, detail="Bot 服务商与全局配置不一致，请使用全局服务商")
+    history = list(reversed(db.scalars(select(Message).where(Message.bot_id == bot_id)
+                   .order_by(Message.created_at.desc(), Message.id.desc()).limit(40)).all()))
+    reply = generate_reply(config, bot, history, body.content.strip(), MODEL_ENCRYPTION_KEY)
+    # Only persist a complete turn; failed requests can be retried without duplicate messages.
+    user_message = Message(bot_id=bot_id, sender="user", content=body.content.strip())
+    db.add(user_message)
+    db.flush()
+    assistant_message = Message(bot_id=bot_id, sender="assistant", content=reply)
+    db.add(assistant_message)
+    db.commit()
+    db.refresh(user_message)
+    db.refresh(assistant_message)
+    return [user_message, assistant_message]
+
+
 @app.get("/bots/{bot_id}/messages", response_model=list[MessageRead], dependencies=[Depends(authorize)])
 def list_messages(bot_id: str, db: Session = Depends(get_db)):
     find_bot(db, bot_id)
-    return db.scalars(select(Message).where(Message.bot_id == bot_id).order_by(Message.created_at, Message.id).limit(200)).all()
+    return list(reversed(db.scalars(select(Message).where(Message.bot_id == bot_id).order_by(Message.created_at.desc(), Message.id.desc()).limit(200)).all()))
 
 
 @app.post("/bots/{bot_id}/tasks", response_model=TaskRead, status_code=201, dependencies=[Depends(authorize)])
