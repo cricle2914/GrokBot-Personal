@@ -73,6 +73,11 @@ function App() {
         await invoke('connect_ssh', { alias: sshAlias.trim(), remotePort: sshPort });
         localStorage.setItem('grokbot-ssh-alias', sshAlias.trim());
         localStorage.setItem('grokbot-ssh-port', String(sshPort));
+      } else {
+        const endpoint = new URL(server);
+        if (endpoint.protocol !== 'https:' && !(endpoint.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(endpoint.hostname))) {
+          throw new Error('远程直连必须使用 HTTPS；本机开发地址可用 HTTP');
+        }
       }
       await api('/health');
       const list = await api<Bot[]>('/bots');
